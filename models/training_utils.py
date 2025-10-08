@@ -58,17 +58,9 @@ def dann_batch(model, batch, device, detach_base, binary, full_replay, loss_para
     return total_loss, metrics
 
 def heuristic_dualbranch_batch(model, batch, device, **kwargs):
-    if len(batch) == 4:
-        inputs1, inputs2, labels, domain_labels = batch
-        inputs1, inputs2, labels, domain_labels = inputs1.to(device), inputs2.to(device), labels.to(device), domain_labels.to(device)
-        inputs = (inputs1, inputs2)
-    elif len(batch) == 3:
-        inputs1, labels, domain_labels = batch
-        inputs1, labels, domain_labels = inputs1.to(device), labels.to(device), domain_labels.to(device)
-        inputs = (inputs1,)
-    else:
-        raise ValueError(f"Batch contains {len(batch)} objects. Should contain 3 or 4 - image/two, labels, domain_labels")
-
+    inputs, labels, domain_labels = batch
+    inputs = tuple(x.to(device) for x in inputs)
+    labels, domain_labels = labels.to(device), domain_labels.to(device)
     mse_criterion = kwargs['mse_criterion']
 
     outputs = model(*inputs)
@@ -188,7 +180,7 @@ def evaluate_model(model, dataloader, criterion, device):
     total_samples = 0
     with torch.no_grad():
         for batch in dataloader:
-            batch_size = batch[0].shape[0]
+            batch_size = batch[-1].shape[0]
             loss, _ = heuristic_dualbranch_batch(model, batch, device, mse_criterion=criterion)
             total_loss += loss.item() * batch_size
             total_samples += batch_size
@@ -378,8 +370,10 @@ def unified_train_loop(
                     if gradient_clipping:
                         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                     scaler.step(optimizer)
+                    old_scaler = scaler.get_scale()
                     scaler.update()
-                    if scheduler is not None:
+                    new_scaler = scaler.get_scale()
+                    if new_scaler >= old_scaler and scheduler is not None:
                         lr_scheduler.step()
                 else:
                     loss, metrics = batch_fn(model, batch, device, **{**batch_kwargs, 'current_domain': current_domain, 'alpha':alpha})
@@ -392,7 +386,7 @@ def unified_train_loop(
                             
                 metrics.setdefault('lrs', []).append(optimizer.param_groups[0]['lr'])
 
-                batch_size = batch[0].size(0)
+                batch_size = batch[-1].size(0)
                 epoch_loss += loss.item() * batch_size
                 samples += batch_size
                 batch_metrics_list.append(metrics)
