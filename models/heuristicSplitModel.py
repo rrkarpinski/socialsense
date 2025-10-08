@@ -98,38 +98,40 @@ class DualBranchModel(nn.Module):
             )
             branch_feature_dim = 128
 
-        if self.setup.get('env') == 'label':
-            max_rooms = 30,
-            self.env_branch = nn.Embedding(max_rooms, 64)
-            env_feature_dim = 64
-
         if self.branch_norm:
             branch = branch.append(nn.LayerNorm(branch_feature_dim))
         
         # If using frozen CLIP reusing the model is more efficient
         if self.setup['branch'] == 'clip':
-            self.social_branch = branch
-            self.env_branch = branch
+            self.scene_branch = branch
+            self.focus_branch = branch 
         else:
-            self.social_branch = branch
-            self.env_branch = copy.deepcopy(branch)
+            self.scene_branch = branch
+            self.focus_branch = copy.deepcopy(branch)
 
-        soc_feature_dim = branch_feature_dim
-        env_feature_dim = branch_feature_dim
+        scene_feature_dim = branch_feature_dim
+        focus_feature_dim = branch_feature_dim
+
+        if self.setup.get('scene') == 'label':
+            max_rooms = 30,
+            self.scene_branch = nn.Sequential(
+                nn.Embedding(max_rooms, 64),
+                nn.LayerNorm(64)
+            )
+            scene_feature_dim = 64
 
         # Override one of the branches to run ablations
-        if self.setup.get('env') == 'ablated':
-            env_feature_dim = 0
-        elif self.setup.get('env') == 'ablated_soc':
-            soc_feature_dim = 0
-        
-        if self.setup.get('env') == 'label':
-            max_rooms = 30,
-            self.env_branch = nn.Embedding(max_rooms, 64)
-            env_feature_dim = 64
+        # env+0
+        # 0+soc
+        # full+0
+        # full+full
+        # env_label+0
+        #global+0
+        #0+local
+        if self.setup.get('ablation') == True:
+            focus_feature_dim = 0
 
-
-        self.fusion_dim = soc_feature_dim + env_feature_dim
+        self.fusion_dim = scene_feature_dim + focus_feature_dim
 
         self.head = nn.Sequential(
             nn.Linear(self.fusion_dim, 512),
@@ -150,24 +152,19 @@ class DualBranchModel(nn.Module):
             nn.Linear(128, num_outputs)
         )
         
-    def forward(self, social_imgs, env_imgs=None):
-        if env_imgs is None:
-            env_features = torch.zeros(social_imgs.size(0), 0, device=social_imgs.device, dtype=social_imgs.dtype)
+    def forward(self, scene_imgs, focus_imgs=None):
+        if focus_imgs is None:
+            focus_feats = torch.zeros(scene_imgs.size(0), 0, device=scene_imgs.device, dtype=scene_imgs.dtype)
         else:
-            env_features = self.env_branch(env_imgs)
-            social_features = self.social_branch(social_imgs)
+            focus_feats = self.focus_branch(focus_imgs)
+        
+        scene_feats = self.scene_branch(scene_imgs)
 
-        if social_imgs is None:
-            social_features = torch.zeros(env_imgs.size(0), 0, device=env_imgs.device, dtype=env_imgs.dtype)
-        else:
-            env_features = self.env_branch(env_imgs)
-            social_features = self.social_branch(social_imgs)
-
-        fused_features = torch.cat([social_features, env_features], dim=1)
-        scores = self.head(fused_features)
+        fused_feats = torch.cat([scene_feats, focus_feats], dim=1)
+        scores = self.head(fused_feats)
 
         return {
             'output': scores,
-            'invariant_feats': social_features,
-            'specific_feats': env_features
+            'specific_feats': scene_feats,
+            'invariant_feats': focus_feats
         }
