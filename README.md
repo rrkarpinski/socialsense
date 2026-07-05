@@ -5,6 +5,7 @@
 The project uses two datasets, **MANNERSDB+** and **OFFICE-MANNERSDB**, both extensions of the original MANNERSDB.
 
 ### Directory structure
+```
 datasets/
 ├── MANNERSDBPlus/
 │ ├── NAO/
@@ -14,13 +15,16 @@ datasets/
 ├── NAO/
 ├── Pepper/
 └── PR2/
+```
 
 Each robot directory follows the same structure:
+```
 [robot]/
 ├── Annotations/
 │ └── *.csv # single CSV, 11 columns (see below)
 └── Images/
 └── *.png # 1920x1080 images, named by IMAGE_ID
+```
 
 **Annotation CSV columns:**
 
@@ -39,6 +43,7 @@ Each robot directory follows the same structure:
 | Reason | Free-text annotator justification |
 
 ## Project Structure
+```
 models/
 ├── heuristicSplitModel_preprocessing.ipynb # segmentation pipeline: panoptic segmentation → binary masks → social/environmental split
 ├── heuristicSplitModel.py # model architecture
@@ -61,3 +66,4 @@ experiments/
 ├── train_config.py # script for training hyperparameters and configuration
 ├── train_models.py # script for model training logic
 └── run_benchmarks.py # script for benchmark execution across model variants
+```
