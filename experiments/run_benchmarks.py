@@ -6,7 +6,7 @@ from datetime import datetime
 
 # NUM_WORKERS_LIST = [4, 6]              # for 'normal...'
 # PERSISTENT_LIST = [True]
-# SCENARIOS = ['normal.onlysoc']         # normal scenario(s) you want
+# SCENARIOS = ['normal.onlysoc']         # normal scenario(s)
 
 # Then, for HDF5 part:
 NUM_WORKERS_LIST = [0]

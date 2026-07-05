@@ -1,49 +1,63 @@
-# socialsense
+# Mind the Context
 
-The project uses two datasets: MANNERSDB+ and MANNERSDB_OFFICE, both are extensions of the preexisting MANNERSDB.
-Directory structure for the datasets is:
-datasets
-    MANNERSDBPlus
-        NAO
-        Pepper
-        PR2
-    OFFICE-MANNERSDB
-        NAO
-        Pepper
-        PR2
-Every robots dir structure:
-[robot]
-    Annotations
-        *.csv - single CSV file with 11 columns: [IMAGE_ID, Vaccum Cleaning, Mopping the Floor, Carry Warm Food, Carry Cold Food, Carry Drinks, Carry Small Objects, Carry Large Objects, Cleaning, Starting a conversation, Reason]   
-    Images
-        [*.png] - multiple .png 1920x1080 images with names corresponding to IMAGE_ID's from the Annotations .csv file.
+## Dataset
 
+The project uses two datasets, **MANNERSDB+** and **OFFICE-MANNERSDB**, both extensions of the original MANNERSDB.
 
-models/heuristicSplitModel_preprocessing.ipynb
+### Directory structure
+datasets/
+├── MANNERSDBPlus/
+│ ├── NAO/
+│ ├── Pepper/
+│ └── PR2/
+└── OFFICE-MANNERSDB/
+├── NAO/
+├── Pepper/
+└── PR2/
 
-models/heuristicSplitModel.py
+Each robot directory follows the same structure:
+[robot]/
+├── Annotations/
+│ └── *.csv # single CSV, 11 columns (see below)
+└── Images/
+└── *.png # 1920x1080 images, named by IMAGE_ID
 
-buffers
-baselines
-training_utils.py
+**Annotation CSV columns:**
 
+| Column | Description |
+|---|---|
+| IMAGE_ID | Unique identifier, matches image filename |
+| Vacuum Cleaning | Appropriateness score |
+| Mopping the Floor | Appropriateness score |
+| Carry Warm Food | Appropriateness score |
+| Carry Cold Food | Appropriateness score |
+| Carry Drinks | Appropriateness score |
+| Carry Small Objects | Appropriateness score |
+| Carry Large Objects | Appropriateness score |
+| Cleaning | Appropriateness score |
+| Starting a Conversation | Appropriateness score |
+| Reason | Free-text annotator justification |
+
+## Project Structure
+models/
+├── heuristicSplitModel_preprocessing.ipynb # segmentation pipeline: panoptic segmentation → binary masks → social/environmental split
+├── heuristicSplitModel.py # model architecture
+├── buffers.py # rehearsal buffer for continual learning
+└── training_utils.py # shared training helper functions
 
 data_processing/
+├── data_processing.ipynb # builds HDF5 files from all dataset variants
+├── build_data.py # builds (image, label) pairs from raw data
+├── robotfocus.ipynb # builds robot close-up dataset variant
+├── data_utils.py # prepares train/validation/test splits
+└── raw_dataset_stats.ipynb # MANNERSDB dataset statistics and exploration
 
-
-data_processing.ipynb
-
-building dataset from raw data using buid_data.py 
-prepare specific training datasets using data_utils.py
-
-
-dataset analysis in data_analysis.ipynb
-
-peturbations.ipynb to create occluded environmnet images. Other perturbations were done by manually editing images.
-
-exeriments/
-training
-evaluation
-statistical analysis of results using corrstats.py
-resizing images for thesis document, various file comparisons, sanity checks - benchworking document
-
+experiments/
+├── baseline_*.ipynb # inference and evaluation for each baseline model
+├── corrstats.py # statistical analysis utilities for results
+├── evaluation.ipynb # full evaluation pipeline and results tables
+├── training.ipynb # training entry point
+├── past_runs.ipynb # log/history of prior training runs
+├── train_config.py # script for training hyperparameters and configuration
+├── train_models.py # script for model training logic
+└── run_benchmarks.py # script for benchmark execution across model variants
