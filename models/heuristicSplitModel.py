@@ -173,8 +173,10 @@ class DualBranchModel(nn.Module):
         
         return {
             'output': scores,
-            'specific_feats': scene_feats,
-            'invariant_feats': focus_feats
+            # 'specific_feats': scene_feats, #legacy
+            # 'invariant_feats': focus_feats, #legacy
+            'scene_feats': scene_feats,
+            'focus_feats': focus_feats,
         }
     
 
@@ -203,6 +205,44 @@ class DualBranchModel_fusions(nn.Module):
                 nn.AdaptiveAvgPool2d(1),
                 nn.Flatten()
             )
+            branch_feature_dim = 1280
+
+            model = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.IMAGENET1K_V1).features
+            first_conv = model[0][0]
+            branch_list = []
+
+            use_coordconv = self.setup.get('coordconv', False)
+            use_coordattention = self.setup.get('coordattention', False)
+
+            # Modify first conv input channels if coordconv enabled
+            if use_coordconv:
+                branch_list.append(AddCoordChannels())
+                in_channels = 5  # 3 RGB + 2 coordinate channels
+            else:
+                in_channels = 3  # RGB only
+
+            model[0][0] = nn.Conv2d(
+                in_channels,
+                first_conv.out_channels,
+                kernel_size=first_conv.kernel_size,
+                stride=first_conv.stride,
+                padding=first_conv.padding,
+                bias=first_conv.bias is not None,
+            )
+            with torch.no_grad():
+                model[0][0].weight[:, :3, :, :] = first_conv.weight  # copy pretrained RGB weights
+            
+            branch_list.append(model)
+
+            if use_coordattention:
+                branch_list.append(CoordinateAttention(1280))
+
+            branch_list.extend([
+                nn.AdaptiveAvgPool2d(1),
+                nn.Flatten(),
+            ])
+
+            branch = nn.Sequential(*branch_list)
             branch_feature_dim = 1280
 
             if freeze_branches == 'full':
@@ -240,6 +280,7 @@ class DualBranchModel_fusions(nn.Module):
             branch_feature_dim = 128
 
         if self.branch_norm:
+            # branch.add_module('LayerNorm', nn.LayerNorm(branch_feature_dim))
             branch.append(nn.LayerNorm(branch_feature_dim))
 
         if self.setup['branch'] == 'clip':
@@ -350,3 +391,48 @@ class DualBranchModel_fusions(nn.Module):
             'specific_feats': scene_feats,
             'invariant_feats': focus_feats
         }
+
+
+class CoordinateAttention(nn.Module):
+    def __init__(self, in_channels, reduction=32):
+        super().__init__()
+        hidden = max(8, in_channels // reduction)
+        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
+        self.pool_w = nn.AdaptiveAvgPool2d((1, None))
+        self.conv1 = nn.Conv2d(in_channels, hidden, 1)
+        self.bn1 = nn.BatchNorm2d(hidden)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv_h = nn.Conv2d(hidden, in_channels, 1)
+        self.conv_w = nn.Conv2d(hidden, in_channels, 1)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        n, c, h, w = x.size()
+        x_h = self.pool_h(x)
+        x_w = self.pool_w(x)
+        x_w = x_w.permute(0, 1, 3, 2)
+        xy = torch.cat([x_h, x_w], dim=2)
+        xy = self.conv1(xy)
+        xy = self.bn1(xy)
+        xy = self.relu(xy)
+        x_h, x_w = torch.split(xy, [h, w], dim=2)
+        x_w = x_w.permute(0, 1, 3, 2)
+        a_h = self.conv_h(x_h).sigmoid()
+        a_w = self.conv_w(x_w).sigmoid()
+        return x * a_h * a_w
+
+class AddCoordChannels(nn.Module):
+    def __init__(self, normalize=True):
+        super().__init__()
+        self.normalize = normalize
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+        device = x.device
+        if self.normalize:
+            y_coord = torch.linspace(-1, 1, H, device=device).view(1, 1, H, 1).expand(B, 1, H, W)
+            x_coord = torch.linspace(-1, 1, W, device=device).view(1, 1, 1, W).expand(B, 1, H, W)
+        else:
+            y_coord = torch.linspace(0, 1, H, device=device).view(1, 1, H, 1).expand(B, 1, H, W)
+            x_coord = torch.linspace(0, 1, W, device=device).view(1, 1, 1, W).expand(B, 1, H, W)
+        return torch.cat([x, x_coord, y_coord], dim=1)

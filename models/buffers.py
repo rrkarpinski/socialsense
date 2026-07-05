@@ -65,55 +65,56 @@ class NaiveRehearsalBuffer:
         self.buffer = {}
         self.balancing=balancing
 
-    def update_buffer(self, current_domain, current_dataset):
-        # Add/overwrite current domain
-        self.buffer[current_domain] = Subset(current_dataset, torch.arange(len(current_dataset)))
+    def update_buffer(self, train_domain, train_dataset):
+        # Add/overwrite current training domain
+        self.buffer[train_domain] = Subset(train_dataset, torch.arange(len(train_dataset)))
         
         # Recalculate quota - even for each domain
         num_domains = len(self.buffer)
         buffer_quota_per_domain = self.buffer_size // num_domains
         
-        # Reduce all domains (including current)
+        # Reduce all domains (including current training one)
         for domain in self.buffer:
             domain_buffer = self.buffer[domain]
             max_safe_samples_to_overwrite = min(buffer_quota_per_domain, len(domain_buffer.dataset))
             rand_indices = torch.randperm(len(domain_buffer.dataset))[:max_safe_samples_to_overwrite].numpy()
             self.buffer[domain] = Subset(domain_buffer.dataset, rand_indices)
     
-    def get_loader_with_replay(self, current_domain, current_loader):
+    def get_loader_with_replay(self, train_domain, train_loader):
         if self.balancing:
-            return self.balanced_combine_training_and_replay_loader(current_domain, current_loader)
+            return self.balanced_combine_training_and_replay_loader(train_domain, train_loader)
         else:
-            return self.combine_training_and_replay_loader(current_domain, current_loader)
+            return self.combine_training_and_replay_loader(train_domain, train_loader)
     
-    def balanced_combine_training_and_replay_loader(self, current_domain, current_loader):
-        current_dataset = current_loader.dataset
-        replay_datasets = [dataset for domain, dataset in self.buffer.items() if domain != current_domain]
+    def balanced_combine_training_and_replay_loader(self, train_domain, train_loader):
+        train_dataset = train_loader.dataset
+        replay_datasets = [dataset for domain, dataset in self.buffer.items() if domain != train_domain and len(dataset) > 0]
 
         if not replay_datasets:
-            return current_loader
+            return train_loader
         
-        current_size = len(current_dataset)
+        train_size = len(train_dataset)
         total_replay_size = sum(len(d) for d in replay_datasets)
-        samples_per_domain = current_size // len(replay_datasets)
-        replay_subsets = []
+        samples_per_domain = train_size // len(replay_datasets)
         
         # Case 1: Small buffer - upsample the buffer - domain stratified upsampling with replacement
-        if total_replay_size < current_size:
+        if total_replay_size < train_size:
+            replay_subsets = []
             for domain_data in replay_datasets:
                 indices = torch.randint(0, len(domain_data), (samples_per_domain,))
                 replay_subsets.append(Subset(domain_data, indices))
             replay_dataset = ConcatDataset(replay_subsets)
         
         # Case 2: Large buffer - upsample the training data - upsampling with replacement
-        elif (total_replay_size > current_size):
-            indices = torch.randint(0, current_size, (total_replay_size,))
-            current_dataset = Subset(current_dataset, indices)
+        elif (total_replay_size > train_size):
+            indices = torch.randint(0, train_size, (total_replay_size-train_size,))
+            extra_train_dataset = Subset(train_dataset, indices)
+            train_dataset = ConcatDataset([train_dataset, extra_train_dataset])
             replay_dataset = ConcatDataset(replay_datasets)
         
         # Case 3: Large buffer - downsample the buffer - domain stratified downsampling
         # Obsolete - just set the buffer size smaller
-        # elif (total_replay_size > current_size) and (self.balancing == 'downsample_buffer'):
+        # elif (total_replay_size > train_size) and (self.balancing == 'downsample_buffer'):
         #     for domain_data in replay_datasets:
         #         indices = torch.randperm(len(domain_data))[:samples_per_domain]
         #         replay_subsets.append(Subset(domain_data, indices))
@@ -123,35 +124,35 @@ class NaiveRehearsalBuffer:
         else: 
             replay_dataset = ConcatDataset(replay_datasets)
 
-        combined_dataset = ConcatDataset([replay_dataset, current_dataset])
+        combined_dataset = ConcatDataset([replay_dataset, train_dataset])
         combined_loader = DataLoader(
             combined_dataset,
-            batch_size=current_loader.batch_size,
+            batch_size=train_loader.batch_size,
             shuffle=True,
-            num_workers=current_loader.num_workers,
-            pin_memory=current_loader.pin_memory,
-            drop_last=current_loader.drop_last
+            num_workers=train_loader.num_workers,
+            pin_memory=train_loader.pin_memory,
+            drop_last=train_loader.drop_last
         )
         return combined_loader
 
-    def combine_training_and_replay_loader(self, current_domain, current_loader):
-        current_dataset = current_loader.dataset
-        replay_datasets = [dataset for domain, dataset in self.buffer.items() if domain != current_domain]
+    def combine_training_and_replay_loader(self, train_domain, train_loader):
+        train_dataset = train_loader.dataset
+        replay_datasets = [dataset for domain, dataset in self.buffer.items() if domain != train_domain]
 
-        #Enforces 1:1 ratio when current ≥ buffer
+        #Enforces 1:1 ratio when current training one ≥ buffer
         total_replay = sum(len(dataset) for dataset in replay_datasets)
         if total_replay > 0:
-            K = max(len(current_dataset) // total_replay, 1)
+            K = max(len(train_dataset) // total_replay, 1)
             replay_datasets = replay_datasets * K
 
-        combined_dataset =  ConcatDataset(replay_datasets + [current_dataset])
+        combined_dataset =  ConcatDataset(replay_datasets + [train_dataset])
         combined_dataset = DataLoader(
             combined_dataset,
-            batch_size=current_loader.batch_size,
+            batch_size=train_loader.batch_size,
             shuffle=True,
-            num_workers=current_loader.num_workers,
-            pin_memory=current_loader.pin_memory,
-            drop_last=current_loader.drop_last
+            num_workers=train_loader.num_workers,
+            pin_memory=train_loader.pin_memory,
+            drop_last=train_loader.drop_last
         )
         return combined_dataset
     

@@ -1,5 +1,6 @@
 import torch
-from tqdm.notebook import tqdm, trange
+from tqdm.auto import tqdm
+# from tqdm import tqdm,trange
 import numpy as np
 import pickle
 import datetime
@@ -290,7 +291,7 @@ def timing(history, key):
 
 def unified_train_loop(
     model, domains, domain_dataloaders, buffer, optimizer, device,
-    batch_fn, batch_kwargs, num_epochs, exp_name="exp", 
+    batch_fn, batch_kwargs, num_epochs, exp_name, 
     gradient_clipping=False, collect_tsne_data=False, restart={}, 
     eval_buffer=False, checkpoint_dir="../checkpoints", validation_set='val', scheduler=None, refresh_optimiser=False, early_stopping=True,
 ):
@@ -302,12 +303,13 @@ def unified_train_loop(
     history = {
         'train_epoch_loss': [],
         'val_epoch_loss': [],
-        'val_buffer_epoch_loss': [],
         'train_epoch_metrics': [],
         # 'cross_domain_val': [],
         'grad_norms': [],
         # 'timings': {},
     }
+    if eval_buffer:
+        history['val_buffer_epoch_loss']=[]
     
     if restart:
         # Populate history
@@ -319,8 +321,8 @@ def unified_train_loop(
         print(f"Restarting from domain {restart['domain']} index {start_domain_idx}")
         print(f"Buffer: {buffer.get_domain_distribution()}")         
         
-
-    for domain_idx, current_domain in enumerate(tqdm(domains[start_domain_idx:], desc=f"Total training", disable=TQDM_DISABLED), start=start_domain_idx):
+    domains_iter = tqdm(domains[start_domain_idx:], desc="Total training", position=0, disable=TQDM_DISABLED)
+    for domain_idx, current_domain in enumerate(domains_iter, start=start_domain_idx):
         if TQDM_DISABLED: print(f"[{exp_name}]\t{datetime.datetime.now()}: Starting domain {current_domain}")
         if bool(buffer):
             train_loader = buffer.get_loader_with_replay(current_domain, domain_dataloaders[current_domain]['train'])
@@ -346,15 +348,18 @@ def unified_train_loop(
         if early_stopping:
             model_name = exp_name + f"_domain{current_domain}"
             early_stopper = EarlyStopping(checkpoint_dir=checkpoint_dir, model_name=model_name, patience=15, verbose=False, delta=1e-3)
-
-        for epoch in trange(num_epochs, desc=f"Current domain {current_domain}", disable=TQDM_DISABLED):
+        
+        epoch_iter = tqdm(range(num_epochs), desc=f"Domain {current_domain}", position=1, disable=TQDM_DISABLED)
+        for epoch in epoch_iter:
             if TQDM_DISABLED: print(f"[{exp_name}]\t{datetime.datetime.now()}: Starting epoch {epoch}/{num_epochs}")
             model.train()
             epoch_loss = 0.0
             samples = 0
             batch_metrics_list = []
             
-            for batch_idx, batch in enumerate(tqdm(train_loader, desc=f"Current epoch {epoch}", leave=False, disable=TQDM_DISABLED)):
+            # batch_iter = tqdm(total=len(train_loader), desc=f"Epoch {epoch}", position=2, leave=False)
+            for batch_idx, batch in enumerate(train_loader):
+            # for batch_idx, batch in enumerate(tqdm(train_loader, desc=f"Current epoch {epoch}", position=2, leave=False, disable=TQDM_DISABLED)):
                 if not batch_kwargs.get('alpha'):
                     p = (epoch * len_dataloader + batch_idx) / (num_epochs * len_dataloader)
                     alpha = 2. / (1. + np.exp(-10 * p)) - 1
@@ -382,8 +387,8 @@ def unified_train_loop(
                         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                     optimizer.step()
                     if scheduler is not None:
-                        lr_scheduler.step()
-                            
+                        lr_scheduler.step()    
+                    
                 metrics.setdefault('lrs', []).append(optimizer.param_groups[0]['lr'])
 
                 batch_size = batch[-1].size(0)
@@ -391,6 +396,9 @@ def unified_train_loop(
                 samples += batch_size
                 batch_metrics_list.append(metrics)
             
+            # batch_iter.close()
+            # tqdm._instances.clear()
+
             avg_epoch_loss = epoch_loss / samples
             history['train_epoch_loss'].append(avg_epoch_loss)
             # Average batch metrics for this epoch
@@ -420,6 +428,8 @@ def unified_train_loop(
                     print(f"Early stopping triggered at domain {current_domain} epoch {epoch}. Model restored to epoch {best_epoch}")
                     break
 
+        epoch_iter.close()
+
         # Instead of batchwise average do cross domain validation on inference on all test samples
         # Cross-domain validation (after each domain)
         # cross_val = cross_domain_validation(model, domain_dataloaders, batch_kwargs['mse_criterion'], device=device, validation_set=validation_set)
@@ -439,4 +449,43 @@ def unified_train_loop(
             buffer.update_buffer(current_domain, domain_dataloaders[current_domain]['train'].dataset)
         if eval_buffer:
             eval_buffer.update_buffer(current_domain, domain_dataloaders[current_domain][validation_set].dataset)
+    
+    domains_iter.close()
+
+    # Save all domain models in one gzip
+    # archive_domain_models(exp_name, checkpoint_dir)
     return history
+
+
+import os
+import tarfile
+import gzip
+from pathlib import Path
+
+def archive_domain_models(core_name, checkpoints_dir='../checkpoints'):
+    checkpoints_dir = Path(checkpoints_dir)
+
+    domain_files = list(checkpoints_dir.glob(f"{core_name}_domain*.pt"))
+    if len(domain_files) != 6:
+        raise FileNotFoundError(f"{len(domain_files)} domain .pt files found for {core_name}")
+
+    config_files = list(checkpoints_dir.glob(f"{core_name}_config.json"))
+    if len(config_files) != 1:
+        raise FileNotFoundError(f"{len(config_files)} config files found for {core_name}_config.json")
+
+    all_files = domain_files + config_files
+
+    num_steps = len(all_files) + 1  # each file added + gzip compress step
+    with tqdm(total=num_steps, desc="Archiving and compressing") as pbar:
+        tar_name = checkpoints_dir / f"{core_name}.tar"
+        with tarfile.open(tar_name, "w") as tar:
+            for file in all_files:
+                tar.add(file, arcname=file.name)
+                pbar.update(1)
+
+        gzip_name = checkpoints_dir / f"{core_name}.tar.gz"
+        with open(tar_name, 'rb') as f_in, gzip.open(gzip_name, 'wb') as f_out:
+            f_out.writelines(f_in)
+        pbar.update(1)
+
+    os.remove(tar_name)

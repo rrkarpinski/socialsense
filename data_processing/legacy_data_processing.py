@@ -170,16 +170,30 @@ def validate_final_data(df):
 
     return True
 
+import torchvision.transforms.functional as F
 
-class ImageDataset(Dataset):
-    def __init__(self, df, transforms, img_path_cols=['image_path'], category_col='domain', return_labels=True):
-        assert len(transforms) == len(img_path_cols), f"Assertion: Number of image path columns ({len(img_path_cols)}) has to equal number of transforms ({len(transforms)})."
+class DualImageDataset(Dataset):
+    def __init__(self, df, depth_transform=None, yolo_transform=None, resize_img_to=(144,256)):
         self.df = df.reset_index(drop=True)
-        self.img_path_cols = img_path_cols
-        self.category_col = category_col
-        self.transforms = transforms
-        self.category_indexes = {cat: idx for idx, cat in enumerate(df[category_col].unique())}
-        self.return_labels = return_labels
+        self.resize_img_to = resize_img_to
+        self.depth_transform = depth_transform or self._get_depth_transform()
+        self.yolo_transform = yolo_transform or self._get_yolo_transform()
+        self.domain_to_index = {domain: idx for idx, domain in enumerate(df['domain'].unique())}
+
+    
+    def _get_depth_transform(self,):
+        return transforms.Compose([
+            transforms.Resize(self.resize_img_to),
+            transforms.ToTensor(),
+            transforms.Normalize(*NORM_VALUES)
+        ])
+    
+    def _get_yolo_transform(self):
+        return transforms.Compose([
+            transforms.Resize(self.resize_img_to),
+            transforms.ToTensor(),
+            transforms.Normalize(*NORM_VALUES)
+        ])
     
     def __len__(self):
         return len(self.df)
@@ -187,33 +201,84 @@ class ImageDataset(Dataset):
     def __getitem__(self, idx):
         if isinstance(idx, torch.Tensor):
             idx = idx.item()
+            
         
-        images = []
-        for img_path_col, transform in zip(self.img_path_cols, self.transforms):
-            img_path = str(self.df.iloc[idx][img_path_col])
+        if 'image_path_social' in self.df.columns:
+            img_path_env = str(self.df.iloc[idx]["image_path_env"])
+            img_path_social = str(self.df.iloc[idx]["image_path_social"])
             try:
-                img = Image.open(img_path).convert("RGB")
+                image_env = Image.open(img_path_env).convert("RGB")
+            except Exception as e:
+                raise RuntimeError(f"Error loading {img_path_env}: {str(e)}")
+            try:
+                image_social = Image.open(img_path_social).convert("RGB")
+            except Exception as e:
+                raise RuntimeError(f"Error loading {img_path_social}: {str(e)}")
+            
+            depth_image = self.depth_transform(image_social)
+            yolo_image = self.yolo_transform(image_env)
+
+        else:
+            img_path = str(self.df.iloc[idx]["image_path"])
+            try:
+                image = Image.open(img_path).convert("RGB")
             except Exception as e:
                 raise RuntimeError(f"Error loading {img_path}: {str(e)}")
-            
-            img = transform(img) 
-            images.append(img)
-            
+        
+            # Create separate inputs for each backbone
+            depth_image = self.depth_transform(image)
+            yolo_image = self.yolo_transform(image)
+        
         raw_labels = self.df.iloc[idx][LABEL_COLS].values.astype(np.float32)
         scaled_labels = (raw_labels - 1) / 4
         
-        category_labels = self.df.iloc[idx][self.category_col]
-        category_index = self.category_indexes[category_labels]
+        domain_labels = self.df.iloc[idx]['domain']
+        domain_index = self.domain_to_index[domain_labels]
+        
+        return (depth_image, yolo_image), torch.from_numpy(scaled_labels), domain_index
 
-        if self.return_labels:
-            return tuple(images), torch.from_numpy(scaled_labels), category_index
-        else:
-            return tuple(images)
+class ImageLabelDataset(Dataset):
+    def __init__(self, df, transform=None, resize_img_to=(144,256), return_labels=True):
+        self.df = df.reset_index(drop=True)
+        self.resize_img_to = resize_img_to
+        self.transform = transform or self._get_transform()
+        self.return_labels = return_labels
+        self.domain_to_index = {domain: idx for idx, domain in enumerate(df['domain'].unique())}
+        
+    
+    def _get_transform(self):
+        return transforms.Compose([
+            transforms.Resize(self.resize_img_to),
+            transforms.ToTensor(),
+            transforms.Normalize(*NORM_VALUES)
+        ])
 
+    def __len__(self):
+        return len(self.df)
 
-def _create_dataloaders(df, transforms, img_path_cols, include_test, batch_sizes=(32, 64, 64), seed=42, num_workers=0):
+    def __getitem__(self, idx):
+        if isinstance(idx, torch.Tensor):
+            idx = idx.item()
+            
+        img_path = str(self.df.iloc[idx]["image_path"])
+        try:
+            image = Image.open(img_path).convert("RGB")
+        except Exception as e:
+            raise RuntimeError(f"Error loading {img_path}: {str(e)}")
+        
+        image = self.transform(image)
+
+        raw_labels = self.df.iloc[idx][LABEL_COLS].values.astype(np.float32)
+        scaled_labels = (raw_labels - 1) / 4
+        
+        domain_labels = self.df.iloc[idx]['domain']
+        domain_index = self.domain_to_index[domain_labels]
+  
+        return ((image,), torch.from_numpy(scaled_labels), domain_index) if self.return_labels else image
+
+def _create_dataloaders(df, batch_sizes=(32, 64, 64), resize_img_to=(144,256), seed=42, double_img=False, transforms=None, num_workers=0, include_test=None):
     """Create train/val dataloaders using image_path as unique key"""
-
+    
     # Get image paths as indexing for split
     unique_images = df[['image_path']].reset_index(drop=True)
     
@@ -225,20 +290,31 @@ def _create_dataloaders(df, transforms, img_path_cols, include_test, batch_sizes
     )
    
     # Create subsets
-    train_df = df[df['image_path'].isin(train_paths)]
-    val_df = df[df['image_path'].isin(val_paths)]
+    train_df = df[df['image_path'].isin(train_paths)].reset_index(drop=True)
+    val_df = df[df['image_path'].isin(val_paths)].reset_index(drop=True)
     
-    train_dataset = ImageDataset(train_df, transforms=transforms, img_path_cols=img_path_cols)
-    val_dataset = ImageDataset(val_df, transforms=transforms, img_path_cols=img_path_cols)
+
+    # Create datasets
+    if double_img:
+        train_dataset = DualImageDataset(train_df, transforms[0], transforms[1], resize_img_to=resize_img_to)
+        val_dataset = DualImageDataset(val_df, transforms[0], transforms[1], resize_img_to=resize_img_to)
+    else:
+        train_dataset = ImageLabelDataset(train_df, transform=transforms, resize_img_to=resize_img_to)
+        val_dataset = ImageLabelDataset(val_df, transform=transforms, resize_img_to=resize_img_to)
     
     # Create loaders
+    num_workers = 0
     loaders = {
         'train': DataLoader(train_dataset, batch_size=batch_sizes[0], shuffle=True, num_workers=num_workers, pin_memory=torch.cuda.is_available()),
         'val': DataLoader(val_dataset, batch_size=batch_sizes[1], shuffle=False, num_workers=num_workers, pin_memory=torch.cuda.is_available())
     }
     
-    if include_test is not False:
-        test_dataset = ImageDataset(include_test, transforms=transforms, img_path_cols=img_path_cols)
+    if include_test is not None:
+        test_df = include_test.reset_index(drop=True)
+        if double_img:
+            test_dataset = DualImageDataset(test_df, transforms[0], transforms[1], resize_img_to=resize_img_to)
+        else:
+            test_dataset = ImageLabelDataset(test_df, transform=transforms, resize_img_to=resize_img_to)
         loaders['test']= DataLoader(test_dataset, batch_size=batch_sizes[2], shuffle=False, num_workers=num_workers, pin_memory=torch.cuda.is_available())
 
     split_idx = {'train': train_paths, 'val': val_paths}
@@ -246,7 +322,7 @@ def _create_dataloaders(df, transforms, img_path_cols, include_test, batch_sizes
     return (loaders, split_idx)
 
 
-def get_domain_dataloaders(df, transforms, img_path_cols, include_test=False, return_splits=False, batch_sizes=(32, 64, 64), seed=42, num_workers=0):
+def get_domain_dataloaders(df, return_splits=False, batch_sizes=(32, 64, 64), resize_img_to=(144,256), seed=42, double_img=False, transforms=None, num_workers=0, include_test=None):
     """
     Creates domain stratifed dataloaders
 
@@ -256,14 +332,13 @@ def get_domain_dataloaders(df, transforms, img_path_cols, include_test=False, re
     LGR had 128,128 
     MobileNetv2 had 224, 224
     """
-    assert (include_test is False) or isinstance(include_test, pd.DataFrame), f"Assertion: include_test is {include_test}, should be pd.DataFrame."
-
     domain_dataloaders = {}
     domain_splits = {}
     for domain in df['domain'].unique():
         domain_df = df[df['domain'] == domain]
-        df_test = include_test[include_test['domain'] == domain] if include_test is not False else False
-        loaders, split_idx = _create_dataloaders(domain_df, transforms, img_path_cols, include_test=df_test, batch_sizes=batch_sizes, seed=seed, num_workers=num_workers)
+        if include_test is not None:
+            df_test = include_test[include_test['domain'] == domain]
+        loaders, split_idx = _create_dataloaders(domain_df, batch_sizes=batch_sizes, resize_img_to=resize_img_to, seed=seed, double_img=double_img, transforms=transforms, num_workers=num_workers, include_test=df_test)
         domain_dataloaders[domain] = loaders
         domain_splits[domain] = split_idx
 
@@ -282,9 +357,9 @@ def combine_all_dataloaders(domain_dataloaders):
     all_test_dataset  = ConcatDataset(test_datasets)
 
 
-    all_train_loader = ImageTupleDataLoader(all_train_dataset, batch_size=32, shuffle=True)
-    all_val_loader   = ImageTupleDataLoader(all_val_dataset, batch_size=64, shuffle=False)
-    all_test_loader  = ImageTupleDataLoader(all_test_dataset, batch_size=64, shuffle=False)
+    all_train_loader = DataLoader(all_train_dataset, batch_size=32, shuffle=True)
+    all_val_loader   = DataLoader(all_val_dataset, batch_size=64, shuffle=False)
+    all_test_loader  = DataLoader(all_test_dataset, batch_size=64, shuffle=False)
 
     all_domain_dataloaders={}
     all_domain_dataloaders['AllDomains']={
@@ -394,9 +469,9 @@ if __name__ == "__main__":
 # ----------- Legacy code for splitting dataset, generating dataloaders for train, validation and test. ------------
 # Since then we switched to permanent separation of train vs test and changing all training datast operations to contain only train and val datasets.
 
-def legacy_create_dataloaders(df, batch_sizes=(32, 64, 64), seed=42, return_splits=False, double_img=False, transforms=None, num_workers=0):
+def legacy_create_dataloaders(df, batch_sizes=(32, 64, 64), resize_img_to=(288, 512), seed=42, return_splits=False, double_img=False, transforms=None, num_workers=0):
     """Create train/val/test dataloaders using image_path as unique key"""
-
+    
     # Get image paths as indexing for split
     unique_images = df[['image_path']].reset_index(drop=True)
     
@@ -420,13 +495,13 @@ def legacy_create_dataloaders(df, batch_sizes=(32, 64, 64), seed=42, return_spli
 
     # Create datasets
     if double_img:
-        train_dataset = DualImageDataset(train_df, double_img, transforms[0], transforms[1])
-        val_dataset = DualImageDataset(val_df, double_img, transforms[0], transforms[1])
-        test_dataset = DualImageDataset(test_df, double_img, transforms[0], transforms[1])
+        train_dataset = DualImageDataset(train_df, transforms[0], transforms[1], resize_img_to=resize_img_to)
+        val_dataset = DualImageDataset(val_df, transforms[0], transforms[1], resize_img_to=resize_img_to)
+        test_dataset = DualImageDataset(test_df, transforms[0], transforms[1], resize_img_to=resize_img_to)
     else:
-        train_dataset = ImageLabelDataset(train_df, transform=transforms)
-        val_dataset = ImageLabelDataset(val_df, transform=transforms)
-        test_dataset = ImageLabelDataset(test_df, transform=transforms)
+        train_dataset = ImageLabelDataset(train_df, transform=transforms, resize_img_to=resize_img_to)
+        val_dataset = ImageLabelDataset(val_df, transform=transforms, resize_img_to=resize_img_to)
+        test_dataset = ImageLabelDataset(test_df, transform=transforms, resize_img_to=resize_img_to)
     
     # Create loaders
     num_workers = 0
@@ -442,7 +517,7 @@ def legacy_create_dataloaders(df, batch_sizes=(32, 64, 64), seed=42, return_spli
     else:
         return loaders
 
-def legacy_get_dataloader(df, batch_sizes=(32, 64, 64), return_splits=False, double_img=False, transforms=None, num_workers=0):
+def legacy_get_dataloader(df, batch_sizes=(32, 64, 64), resize_img_to=(224,224), return_splits=False, double_img=False, transforms=None, num_workers=0):
     """
     Creates domain stratifed dataloaders
     Returns:
@@ -462,7 +537,7 @@ def legacy_get_dataloader(df, batch_sizes=(32, 64, 64), return_splits=False, dou
     for domain in domains:
         domain_df = df[df['domain'] == domain]
         #domain_df = domain_df.sample(frac=0.5, random_state=42)
-        loaders, split_idx = legacy_create_dataloaders(domain_df, batch_sizes=batch_sizes, seed=42, return_splits=True, double_img=double_img, transforms=transforms, num_workers=num_workers)
+        loaders, split_idx = legacy_create_dataloaders(domain_df, batch_sizes=batch_sizes, resize_img_to=resize_img_to, seed=SEED, return_splits=True, double_img=double_img, transforms=transforms, num_workers=num_workers)
         domain_dataloaders[domain] = loaders
         test_split_idx.update(set(split_idx['test']))
 
