@@ -185,3 +185,4 @@ __*
 huggingface_cache/
 extra files/
 results/
+*.code-workspace
