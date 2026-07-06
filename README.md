@@ -51,19 +51,16 @@ models/
 └── training_utils.py # shared training helper functions
 
 data_processing/
-├── data_processing.ipynb # builds HDF5 files from all dataset variants
 ├── build_data.py # builds (image, label) pairs from raw data
+├── data_processing.ipynb # builds HDF5 files from all dataset variants
 ├── robotfocus.ipynb # builds robot close-up dataset variant
 ├── data_utils.py # prepares train/validation/test splits
 └── raw_dataset_stats.ipynb # MANNERSDB dataset statistics and exploration
 
 experiments/
-├── baseline_*.ipynb # inference and evaluation for each baseline model
-├── corrstats.py # statistical analysis utilities for results
-├── evaluation.ipynb # full evaluation pipeline and results tables
 ├── training.ipynb # training entry point
+├── evaluation.ipynb # full evaluation pipeline and results tables
+├── baseline_*.ipynb # inference and evaluation for each baseline model
 ├── past_runs.ipynb # log/history of prior training runs
-├── train_config.py # script for training hyperparameters and configuration
-├── train_models.py # script for model training logic
-└── run_benchmarks.py # script for benchmark execution across model variants
+├── corrstats.py # statistical analysis utilities for results
 ```
