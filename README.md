@@ -61,6 +61,22 @@ experiments/
 ├── training.ipynb # training entry point
 ├── evaluation.ipynb # full evaluation pipeline and results tables
 ├── baseline_*.ipynb # inference and evaluation for each baseline model
+├── run_dare_duca_5folds.bat # runs 5-fold cross-validation training for the DUCA and DARE++ baselines
 ├── past_runs.ipynb # log/history of prior training runs
 ├── corrstats.py # statistical analysis utilities for results
 ```
+
+## Baselines
+
+We compare against three prior methods, using their original authors'
+implementations (modified for Domain-IL setting and 5-fold cross-validation protocol, see forks for modificaiton details):
+
+| Method | Paper | Original repo | Our fork |
+|---|---|---|---|
+| DUCA | [](ink) | [github.com/](link) | [github.com/rrkarpinski/DUCA_mannersDIL](link) |
+| DARE++ | [](link) | [github.com/](link) | [github.com/rrkarpinski/DARE_mannersDIL](link) |
+| FedLGR | [](link) | [github.com/](link) | [github.com/rrkarpinski/FedLGR_mannersDIL](link) |
+
+Inference and evaluation notebooks for each baseline are in
+`experiments/baseline_*.ipynb`. See `experiments/run_dare_duca_5folds.bat`
+for training commands.

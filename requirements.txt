@@ -22,6 +22,7 @@ transformers==4.52.4
 
 albumentations==2.0.0
 autodistill==0.1.29
+autodistill-grounded-sam==0.1.2
 roboflow==1.1.67
 huggingface-hub==0.33.0
 pycocotools==2.0.10
